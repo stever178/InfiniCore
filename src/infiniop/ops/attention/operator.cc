@@ -1,4 +1,5 @@
 #include "../../operator.h"
+#include "../../../utils.h"
 #include "../../../utils/check.h"
 #include "../../handle.h"
 #include "../../tensor.h"
@@ -10,7 +11,7 @@
 #include <cmath>
 #include <cstdint>
 
-struct _AttentionDescriptor {
+struct _infiniopAttentionDescriptor {
     infiniDevice_t device;
     infiniopRearrangeDescriptor_t rearrange_desc_k;
     infiniopRearrangeDescriptor_t rearrange_desc_v;
@@ -30,7 +31,7 @@ struct _AttentionDescriptor {
     uint64_t v_cache_offset;
 };
 
-typedef struct _AttentionDescriptor *_AttentionDescriptor_t;
+typedef struct _infiniopAttentionDescriptor *_infiniopAttentionDescriptor_t;
 
 __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t handle,
                                                               infiniopAttentionDescriptor_t *desc_ptr,
@@ -103,7 +104,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
     // Rearrange q into contiguous
     if (!q_desc->isContiguous(0, 1)) {
         CHECK_STATUS(infiniopCreateTensorDescriptor(&rearranged_q_desc, 3, q_desc->shape().data(), nullptr, q_desc->dtype()));
-        rearranged_q_size = rearranged_q_desc->getByteSize(); // getByteStrides ??? get_byte_size
+        rearranged_q_size = rearranged_q_desc->numel() * infiniSizeOf(rearranged_q_desc->dtype()); // getByteStrides ??? get_byte_size
         rearrange_desc_q = new InfiniopDescriptor;
         CHECK_STATUS(infiniopCreateRearrangeDescriptor(handle, &rearrange_desc_q, rearranged_q_desc, q_desc));
     }
@@ -124,7 +125,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
     infiniopTensorDescriptor_t full_k_desc;
     uint64_t full_k_shape[3] = {n_kv_head, total_seq_len, head_dim};
     CHECK_STATUS(infiniopCreateTensorDescriptor(&full_k_desc, 3, full_k_shape, k_cache_desc->strides().data(), k_cache_desc->dtype()));
-    full_k_desc = full_k_desc->dimPermute({0, 2, 1}); // 修改方式
+    full_k_desc = full_k_desc->dimPermute({0, 2, 1});
     if (!full_k_desc) {
         return INFINI_STATUS_BAD_PARAM;
     }
@@ -141,7 +142,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
     uint64_t matmul1_workspace_size;
     CHECK_STATUS(infiniopGetGemmWorkspaceSize(matmul1_desc, &matmul1_workspace_size));
     //      matmul1 tensor size
-    uint64_t matmul1_tensor_size = qk_desc->getByteSize();
+    uint64_t matmul1_tensor_size = qk_desc->numel() * infiniSizeOf(qk_desc->dtype());
 
     // CausalSoftmax: softmax(qk)
     //      qk: [n_kv_head, n_group * seq_len, total_seq_len] -> [n_q_head, seq_len, total_seq_len]
@@ -154,7 +155,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
         return INFINI_STATUS_BAD_PARAM;
     }
     infiniopCausalSoftmaxDescriptor_t softmax_desc;
-    CHECK_STATUS(infiniopCreateCausalSoftmaxDescriptor(handle, &softmax_desc, qk_desc, qk_desc)); // 修改方式
+    CHECK_STATUS(infiniopCreateCausalSoftmaxDescriptor(handle, &softmax_desc, qk_desc, qk_desc));
     //      softmax workspace size
     uint64_t softmax_workspace_size;
     CHECK_STATUS(infiniopGetCausalSoftmaxWorkspaceSize(softmax_desc, &softmax_workspace_size));
@@ -184,7 +185,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
     uint64_t matmul2_workspace_size;
     CHECK_STATUS(infiniopGetGemmWorkspaceSize(matmul2_desc, &matmul2_workspace_size));
     //      matmul2 tensor size
-    uint64_t matmul2_tensor_size = temp_out_desc->getByteSize();
+    uint64_t matmul2_tensor_size = temp_out_desc->numel() * infiniSizeOf(temp_out_desc->dtype());
 
     // Rearrange temp_out into out
     //      out: [seq_len, n_q_head, head_dim]
@@ -220,7 +221,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
     }
 
     // create attention descriptor
-    *(_AttentionDescriptor_t *)desc_ptr = new _AttentionDescriptor{
+    *(_infiniopAttentionDescriptor_t *)desc_ptr = new _infiniopAttentionDescriptor{
         handle->device,
         rearrange_desc_k,
         rearrange_desc_v,
@@ -244,7 +245,7 @@ __C __export infiniStatus_t infiniopCreateAttentionDescriptor(infiniopHandle_t h
 }
 
 __C __export infiniStatus_t infiniopGetAttentionWorkspaceSize(infiniopAttentionDescriptor_t desc, uint64_t *size) {
-    *size = ((_AttentionDescriptor_t)desc)->workspace_size;
+    *size = ((_infiniopAttentionDescriptor_t)desc)->workspace_size;
     return INFINI_STATUS_SUCCESS;
 }
 
@@ -258,7 +259,7 @@ __C __export infiniStatus_t infiniopAttention(infiniopAttentionDescriptor_t desc
                                               void *k_cache,
                                               void *v_cache,
                                               void *stream) {
-    auto _desc = (_AttentionDescriptor_t)desc;
+    auto _desc = (_infiniopAttentionDescriptor_t)desc;
     void *_workspace = workspace;
     if (workspace_size < _desc->workspace_size) {
         return INFINI_STATUS_INTERNAL_ERROR; // STATUS_MEMORY_NOT_ALLOCATED
@@ -282,11 +283,11 @@ __C __export infiniStatus_t infiniopAttention(infiniopAttentionDescriptor_t desc
     // matmul1: q * full_k
     CHECK_STATUS(infiniopGemm(_desc->matmul_desc1,
                               (char *)_workspace + _desc->matmul1_tensor_size, workspace_size - _desc->matmul1_tensor_size,
-                              _workspace, _q, k_cache, 1.0, 0.0, stream)); // alpha beta
+                              _workspace, _q, k_cache, 1.0, 0.0, stream));
     // softmax(qk)
     CHECK_STATUS(infiniopCausalSoftmax(_desc->softmax_desc,
                                        (char *)_workspace + _desc->matmul1_tensor_size, workspace_size - _desc->matmul1_tensor_size,
-                                       _workspace, _workspace, stream)); // TODO: y\x修改
+                                       _workspace, _workspace, stream));
     // matmul2: softmax(qk) * full_v
     CHECK_STATUS(infiniopGemm(_desc->matmul_desc2,
                               (char *)_workspace + _desc->matmul1_tensor_size + _desc->matmul2_tensor_size,
@@ -299,16 +300,16 @@ __C __export infiniStatus_t infiniopAttention(infiniopAttentionDescriptor_t desc
 }
 
 __C __export infiniStatus_t infiniopDestroyAttentionDescriptor(infiniopAttentionDescriptor_t desc) {
-    if (((_AttentionDescriptor_t)desc)->rearrange_desc_q) {
-        CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_AttentionDescriptor_t)desc)->rearrange_desc_q));
+    if (((_infiniopAttentionDescriptor_t)desc)->rearrange_desc_q) {
+        CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_infiniopAttentionDescriptor_t)desc)->rearrange_desc_q));
     }
-    CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_AttentionDescriptor_t)desc)->rearrange_desc_k));
-    CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_AttentionDescriptor_t)desc)->rearrange_desc_v));
-    CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_AttentionDescriptor_t)desc)->rearrange_desc_out));
-    CHECK_STATUS(infiniopDestroyGemmDescriptor(((_AttentionDescriptor_t)desc)->matmul_desc1));
-    CHECK_STATUS(infiniopDestroyGemmDescriptor(((_AttentionDescriptor_t)desc)->matmul_desc2));
-    CHECK_STATUS(infiniopDestroyCausalSoftmaxDescriptor(((_AttentionDescriptor_t)desc)->softmax_desc));
-    delete (_AttentionDescriptor_t)desc;
+    CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_infiniopAttentionDescriptor_t)desc)->rearrange_desc_k));
+    CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_infiniopAttentionDescriptor_t)desc)->rearrange_desc_v));
+    CHECK_STATUS(infiniopDestroyRearrangeDescriptor(((_infiniopAttentionDescriptor_t)desc)->rearrange_desc_out));
+    CHECK_STATUS(infiniopDestroyGemmDescriptor(((_infiniopAttentionDescriptor_t)desc)->matmul_desc1));
+    CHECK_STATUS(infiniopDestroyGemmDescriptor(((_infiniopAttentionDescriptor_t)desc)->matmul_desc2));
+    CHECK_STATUS(infiniopDestroyCausalSoftmaxDescriptor(((_infiniopAttentionDescriptor_t)desc)->softmax_desc));
+    delete (_infiniopAttentionDescriptor_t)desc;
 
     return INFINI_STATUS_SUCCESS;
 }
