@@ -2,6 +2,7 @@
 #define __INFINIOP_TENSOR_H__
 
 #include "infiniop/tensor_descriptor.h"
+#include <cstdint>
 #include <string>
 #include <vector>
 
