@@ -12,7 +12,7 @@ __C __export infiniStatus_t infiniopCreateTensorDescriptor(infiniopTensorDescrip
         std::vector<ptrdiff_t> strides(ndim);
         ptrdiff_t dsize = 1;
         if (ndim > 0) {
-            for (size_t i = ndim - 1; i >= 0; i--) {
+            for (int i = ndim - 1; i >= 0; i--) {
                 strides[i] = dsize;
                 dsize *= shape_[i];
             }
@@ -60,6 +60,14 @@ ptrdiff_t InfiniopTensorDescriptor::stride(size_t i) const {
 
 size_t InfiniopTensorDescriptor::numel() const {
     return std::accumulate(_shape.begin(), _shape.end(), (size_t)1, std::multiplies<size_t>());
+}
+
+uint64_t InfiniopTensorDescriptor::getByteSize() const {
+    uint64_t size = 1;
+    for (size_t i = 0; i < _shape.size(); i++) {
+        size *= _shape[i];
+    }
+    return size * infiniSizeOf(_dtype);
 }
 
 std::vector<ptrdiff_t> InfiniopTensorDescriptor::getByteStrides() const {

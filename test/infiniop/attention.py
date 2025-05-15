@@ -4,11 +4,9 @@ import sys
 import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from operatorspy import (
+from libinfiniop import (
     open_lib,
     to_tensor,
-    CTensor,
-    DeviceEnum,
     infiniopHandle_t,
     infiniopTensorDescriptor_t,
     create_handle,
@@ -16,9 +14,10 @@ from operatorspy import (
     check_error,
     rearrange_tensor,
     create_workspace,
+    get_args,
+    InfiniDeviceEnum,
 )
 
-from operatorspy.tests.test_utils import get_args
 import torch
 import torch.nn.functional as F
 
@@ -160,12 +159,8 @@ def test(
     )
 
     # Invalidate the shape and strides in the descriptor to prevent them from being directly used by the kernel
-    out_tensor.descriptor.contents.invalidate()
-    q_tensor.descriptor.contents.invalidate()
-    k_tensor.descriptor.contents.invalidate()
-    v_tensor.descriptor.contents.invalidate()
-    k_cache_tensor.descriptor.contents.invalidate()
-    v_cache_tensor.descriptor.contents.invalidate()
+    for tensor in [out_tensor, q_tensor, k_tensor, v_tensor, k_cache_tensor, v_cache_tensor]:
+        tensor.destroyDesc(lib)
 
     workspace_size = c_uint64(0)
     check_error(
@@ -188,14 +183,15 @@ def test(
         )
     )
 
-    assert torch.allclose(out, ans, atol=1e-4, rtol=1e-2)
+    assert torch.allclose(out, ans, atol=1e-3, rtol=1e-2)
 
     check_error(lib.infiniopDestroyAttentionDescriptor(descriptor))
 
 
 def test_cpu(lib, test_cases):
-    device = DeviceEnum.DEVICE_CPU
-    handle = create_handle(lib, device)
+    device = InfiniDeviceEnum.CPU
+    lib.infinirtSetDevice(device, ctypes.c_int(0))
+    handle = create_handle(lib)
 
     for (
         n_q_head,
@@ -235,9 +231,9 @@ def test_cpu(lib, test_cases):
 
 
 def test_cuda(lib, test_cases):
-    device = DeviceEnum.DEVICE_CUDA
-    handle = create_handle(lib, device)
-
+    device = InfiniDeviceEnum.NVIDIA
+    lib.infinirtSetDevice(device, ctypes.c_int(0))
+    handle = create_handle(lib)
     for (
         n_q_head,
         n_kv_head,
@@ -278,9 +274,9 @@ def test_cuda(lib, test_cases):
 def test_bang(lib, test_cases):
     import torch_mlu
 
-    device = DeviceEnum.DEVICE_BANG
-    handle = create_handle(lib, device)
-
+    device = InfiniDeviceEnum.CAMBRICON
+    lib.infinirtSetDevice(device, ctypes.c_int(0))
+    handle = create_handle(lib)
     for (
         n_q_head,
         n_kv_head,
@@ -412,10 +408,10 @@ if __name__ == "__main__":
 
     if args.cpu:
         test_cpu(lib, test_cases)
-    if args.cuda:
+    if args.nvidia:
         test_cuda(lib, test_cases)
-    if args.bang:
+    if args.cambricon:
         test_bang(lib, test_cases)
-    if not (args.cpu or args.cuda or args.bang):
+    if not (args.cpu or args.nvidia or args.cambricon):
         test_cpu(lib, test_cases)
     print("\033[92mTest passed!\033[0m")

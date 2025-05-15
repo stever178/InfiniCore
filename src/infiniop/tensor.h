@@ -24,6 +24,7 @@ public:
     std::vector<ptrdiff_t> strides() const;
     ptrdiff_t stride(size_t i) const;
     std::vector<ptrdiff_t> getByteStrides() const;
+    uint64_t getByteSize() const;
     bool isContiguous(size_t dim_start, size_t dim_end) const;
     bool isContiguous() const;
     size_t numel() const;
