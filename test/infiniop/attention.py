@@ -9,13 +9,15 @@ from libinfiniop import (
     to_tensor,
     infiniopHandle_t,
     infiniopTensorDescriptor_t,
-    create_handle,
-    destroy_handle,
     check_error,
     rearrange_tensor,
     create_workspace,
     get_args,
-    InfiniDeviceEnum,
+    get_test_devices,
+    test_operator,
+    debug,
+    get_tolerance,
+    profile_operation,
 )
 
 import torch
@@ -94,12 +96,12 @@ def test(
     pos,
     k_cache_buf_len,
     v_cache_buf_len,
-    dtype=torch.float16,
     q_stride=None,
     k_stride=None,
     v_stride=None,
     k_cache_stride=None,
     v_cache_stride=None,
+    dtype=torch.float16,
     sync=None
 ):
     print(
@@ -167,154 +169,50 @@ def test(
         lib.infiniopGetAttentionWorkspaceSize(descriptor, ctypes.byref(workspace_size))
     )
     workspace = create_workspace(workspace_size.value, out.device)
-
-    check_error(
-        lib.infiniopAttention(
-            descriptor,
-            workspace.data_ptr() if workspace is not None else None,
-            workspace_size.value,
-            out_tensor.data,
-            q_tensor.data,
-            k_tensor.data,
-            v_tensor.data,
-            k_cache_tensor.data,
-            v_cache_tensor.data,
-            None,
+    def lib_attention():
+        check_error(
+            lib.infiniopAttention(
+                descriptor,
+                workspace.data_ptr() if workspace is not None else None,
+                workspace_size.value,
+                out_tensor.data,
+                q_tensor.data,
+                k_tensor.data,
+                v_tensor.data,
+                k_cache_tensor.data,
+                v_cache_tensor.data,
+                None,
+            )
         )
-    )
-
+    lib_attention()
+    
+    # Validate results
+    atol, rtol = get_tolerance(_TOLERANCE_MAP, dtype)
+    if DEBUG:
+        debug(c, ans, atol=atol, rtol=rtol)
     assert torch.allclose(out, ans, atol=1e-3, rtol=1e-2)
 
+    # Profiling workflow
+    if PROFILE:
+        # fmt: off
+        profile_operation("PyTorch", lambda: attention(q, k, v, k_cache, v_cache, pos), torch_device, NUM_PRERUN, NUM_ITERATIONS)
+        profile_operation("    lib", lambda: lib_attention(), torch_device, NUM_PRERUN, NUM_ITERATIONS)
+        # fmt: on
     check_error(lib.infiniopDestroyAttentionDescriptor(descriptor))
 
 
-def test_cpu(lib, test_cases):
-    device = InfiniDeviceEnum.CPU
-    lib.infinirtSetDevice(device, ctypes.c_int(0))
-    handle = create_handle(lib)
-
-    for (
-        n_q_head,
-        n_kv_head,
-        seq_len,
-        head_dim,
-        pos,
-        k_cache_buf_len,
-        v_cache_buf_len,
-        dtype,
-        q_stride,
-        k_stride,
-        v_stride,
-        k_cache_stride,
-        v_cache_stride,
-    ) in test_cases:
-        test(
-            lib,
-            handle,
-            "cpu",
-            n_q_head,
-            n_kv_head,
-            seq_len,
-            head_dim,
-            pos,
-            k_cache_buf_len,
-            v_cache_buf_len,
-            dtype,
-            q_stride,
-            k_stride,
-            v_stride,
-            k_cache_stride,
-            v_cache_stride,
-        )
-
-    destroy_handle(lib, handle)
-
-
-def test_cuda(lib, test_cases):
-    device = InfiniDeviceEnum.NVIDIA
-    lib.infinirtSetDevice(device, ctypes.c_int(0))
-    handle = create_handle(lib)
-    for (
-        n_q_head,
-        n_kv_head,
-        seq_len,
-        head_dim,
-        pos,
-        k_cache_buf_len,
-        v_cache_buf_len,
-        dtype,
-        q_stride,
-        k_stride,
-        v_stride,
-        k_cache_stride,
-        v_cache_stride,
-    ) in test_cases:
-        test(
-            lib,
-            handle,
-            "cuda",
-            n_q_head,
-            n_kv_head,
-            seq_len,
-            head_dim,
-            pos,
-            k_cache_buf_len,
-            v_cache_buf_len,
-            dtype,
-            q_stride,
-            k_stride,
-            v_stride,
-            k_cache_stride,
-            v_cache_stride,
-        )
-
-    destroy_handle(lib, handle)
-
-
-def test_bang(lib, test_cases):
-    import torch_mlu
-
-    device = InfiniDeviceEnum.CAMBRICON
-    lib.infinirtSetDevice(device, ctypes.c_int(0))
-    handle = create_handle(lib)
-    for (
-        n_q_head,
-        n_kv_head,
-        seq_len,
-        head_dim,
-        pos,
-        k_cache_buf_len,
-        v_cache_buf_len,
-        dtype,
-        q_stride,
-        k_stride,
-        v_stride,
-        k_cache_stride,
-        v_cache_stride,
-    ) in test_cases:
-        test(
-            lib,
-            handle,
-            "mlu",
-            n_q_head,
-            n_kv_head,
-            seq_len,
-            head_dim,
-            pos,
-            k_cache_buf_len,
-            v_cache_buf_len,
-            dtype,
-            q_stride,
-            k_stride,
-            v_stride,
-            k_cache_stride,
-            v_cache_stride,
-        )
-
-    destroy_handle(lib, handle)
-
-
 if __name__ == "__main__":
+    _TENSOR_DTYPES = [torch.float16]
+
+    # Tolerance map for different data types
+    _TOLERANCE_MAP = {
+        torch.float16: {"atol": 1e-3, "rtol": 1e-2},
+    }
+
+    DEBUG = False
+    PROFILE = False
+    NUM_PRERUN = 10
+    NUM_ITERATIONS = 1000
     test_cases = [
         # prefill
         (
@@ -325,7 +223,6 @@ if __name__ == "__main__":
             0,  # pos
             2048,  # k_cache_buf_len
             2048,  # v_cache_buf_len
-            torch.float16,  # dtype
             [64, 2560, 1],  # q_stride
             [64, 2560, 1],  # k_stride
             [64, 2560, 1],  # v_stride
@@ -341,7 +238,6 @@ if __name__ == "__main__":
             3,  # pos
             2048,  # k_cache_buf_len
             2048,  # v_cache_buf_len
-            torch.float16,  # dtype
             [64, 2560, 1],  # q_stride
             [64, 2560, 1],  # k_stride
             [64, 2560, 1],  # v_stride
@@ -357,7 +253,6 @@ if __name__ == "__main__":
             1,  # pos
             8,  # k_cache_buf_len
             8,  # v_cache_buf_len
-            torch.float16,  # dtype
             None,  # q_stride
             None,  # k_stride
             None,  # v_stride
@@ -406,12 +301,13 @@ if __name__ == "__main__":
         infiniopAttentionDescriptor_t,
     ]
 
-    if args.cpu:
-        test_cpu(lib, test_cases)
-    if args.nvidia:
-        test_cuda(lib, test_cases)
-    if args.cambricon:
-        test_bang(lib, test_cases)
-    if not (args.cpu or args.nvidia or args.cambricon):
-        test_cpu(lib, test_cases)
+    # Configure testing options
+    DEBUG = args.debug
+    PROFILE = args.profile
+    NUM_PRERUN = args.num_prerun
+    NUM_ITERATIONS = args.num_iterations
+
+    # Execute tests
+    for device in get_test_devices(args):
+        test_operator(lib, device, test, test_cases, _TENSOR_DTYPES)
     print("\033[92mTest passed!\033[0m")
